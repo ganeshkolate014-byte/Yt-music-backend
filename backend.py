@@ -6,7 +6,7 @@ import yt_dlp
 from functools import lru_cache
 
 # --- CONFIGURATION ---
-app = FastAPI(title="Easy Music API", description="Search, Stream & Recommendations")
+app = FastAPI(title="Simple Music API", description="Search (Pages), Stream & Recommend")
 yt = YTMusic(location="IN") 
 
 app.add_middleware(
@@ -17,6 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- UNLIMITED DOWNLOAD SETTINGS ---
 ydl_opts = {
     'format': 'bestaudio/best',
     'quiet': True,
@@ -24,10 +25,12 @@ ydl_opts = {
     'extract_flat': True,
     'skip_download': True,
     'geo_bypass': True,
+    'cookiefile': 'cookies.txt', # Cookies file zaroori hai
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
 }
 
 # --- HELPER FUNCTION ---
-def clean_data(data, data_type="song"):
+def clean_data(data):
     thumbnails = data.get("thumbnails", [])
     artists = data.get("artists", [])
     
@@ -37,93 +40,59 @@ def clean_data(data, data_type="song"):
     elif isinstance(artists, dict):
         artist_name = artists.get("name", "Unknown")
 
-    # ID extraction logic
-    final_id = data.get("videoId") or data.get("browseId")
-
     return {
-        "id": final_id,  # Sabse upar ID dikhegi
+        "id": data.get("videoId"),
         "title": data.get("title"),
         "subtitle": artist_name,
         "image": thumbnails[-1]["url"] if thumbnails else None,
-        "type": data_type,
-        "duration": data.get("duration") if data_type == "song" else None
+        "duration": data.get("duration")
     }
 
+# --- CACHING (Important for Pagination) ---
+# Hum ek baar me 100 gaane fetch karke cache me rakhenge
+# Taaki jab tu Page 2 maange, to wapas YouTube ke paas na jana pade (Fast Speed)
 @lru_cache(maxsize=50)
-def cached_search(query: str, filter_type: str):
-    return yt.search(query, filter=filter_type)
+def get_cached_results(query: str):
+    return yt.search(query, filter="songs", limit=100)
 
-# --- 1. SMART ROOT DOCS ---
+# --- 1. ROOT DOCS ---
 @app.get("/")
 def root(request: Request):
-    """
-    Automatic Documentation with EASY URLs.
-    """
     base_url = str(request.base_url).rstrip("/")
-    
     return {
         "status": "Online 🚀",
         "endpoints": {
-            "1. Search Song": f"{base_url}/search/Kesariya",
-            "2. Search Album": f"{base_url}/search/albums/Animal",
-            "3. Search Playlist": f"{base_url}/search/playlists/GlobalHits",
-            "4. Get Recommendations (Up Next)": f"{base_url}/recommend/VIDEO_ID",
-            "5. Play Song": f"{base_url}/play/VIDEO_ID",
+            "1. Search (Page 1)": f"{base_url}/search/Arijit/1",
+            "2. Search (Page 2)": f"{base_url}/search/Arijit/2",
+            "3. Play Song": f"{base_url}/play/VIDEO_ID",
+            "4. Recommendations": f"{base_url}/recommend/VIDEO_ID"
         }
     }
 
-# --- 2. EASY SEARCH ENDPOINTS ---
-
-# Case A: Sirf naam likha to 'Song' samjhega
-# Example: /search/Tum Hi Ho
-@app.get("/search/{name}")
-def search_song_only(name: str):
+# --- 2. SEARCH WITH PAGINATION ---
+@app.get("/search/{query}/{page}")
+def search_with_pages(query: str, page: int):
     try:
-        results = cached_search(name, "songs")
-        return [clean_data(res, "song") for res in results]
+        # Ek baar me 100 results laate hain
+        all_results = get_cached_results(query)
+        
+        # Pagination Logic (20 songs per page)
+        items_per_page = 20
+        start = (page - 1) * items_per_page
+        end = start + items_per_page
+        
+        # Slice the results based on page number
+        page_results = all_results[start:end]
+        
+        if not page_results:
+            return {"message": "No more results found on this page."}
+
+        return [clean_data(res) for res in page_results]
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Case B: Type bhi batana hai (albums/playlists)
-# Example: /search/albums/Rockstar
-@app.get("/search/{type}/{name}")
-def search_with_type(type: str, name: str):
-    try:
-        valid_types = ["songs", "albums", "playlists", "videos"]
-        if type not in valid_types:
-            return {"error": f"Invalid type. Use: {valid_types}"}
-
-        results = cached_search(name, type)
-        
-        clean_list = []
-        for res in results:
-            dtype = "song"
-            if "album" in res.get("resultType", "") or type == "albums": dtype = "album"
-            elif "playlist" in res.get("resultType", "") or type == "playlists": dtype = "playlist"
-            
-            clean_list.append(clean_data(res, dtype))
-            
-        return clean_list
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# --- 3. RECOMMENDATIONS (NEW) ---
-# Example: /recommend/5Eqb_-j3FDA
-@app.get("/recommend/{video_id}")
-def get_recommendations(video_id: str):
-    try:
-        # Watch playlist se "Up Next" songs nikalna
-        watch_playlist = yt.get_watch_playlist(video_id)
-        tracks = watch_playlist.get("tracks", [])
-        
-        # Pehla track usually same song hota hai, usko hata sakte hain ya rakh sakte hain
-        # Yahan main saare bhej raha hu
-        return [clean_data(t, "song") for t in tracks if "videoId" in t]
-    except Exception:
-        return []
-
-# --- 4. OTHER ENDPOINTS ---
-
+# --- 3. PLAY / STREAM ---
 @app.get("/play/{video_id}")
 def get_stream(video_id: str):
     try:
@@ -140,46 +109,15 @@ def get_stream(video_id: str):
     except Exception:
         raise HTTPException(status_code=500, detail="Audio Stream Failed")
 
-@app.get("/album/{browse_id}")
-def get_album(browse_id: str):
+# --- 4. RECOMMENDATIONS ---
+@app.get("/recommend/{video_id}")
+def get_recommendations(video_id: str):
     try:
-        album = yt.get_album(browse_id)
-        return {
-            "id": browse_id,
-            "title": album.get("title"),
-            "artist": album.get("artists", [{}])[0].get("name"),
-            "image": album.get("thumbnails", [{}])[-1].get("url"),
-            "tracks": [clean_data(t, "song") for t in album.get("tracks", [])]
-        }
+        watch_playlist = yt.get_watch_playlist(video_id)
+        tracks = watch_playlist.get("tracks", [])
+        return [clean_data(t) for t in tracks if "videoId" in t]
     except Exception:
-        raise HTTPException(status_code=500, detail="Album Not Found")
-
-@app.get("/playlist/{playlist_id}")
-def get_playlist(playlist_id: str):
-    try:
-        pl = yt.get_playlist(playlist_id)
-        return {
-            "id": playlist_id,
-            "title": pl.get("title"),
-            "author": pl.get("author", {}).get("name"),
-            "image": pl.get("thumbnails", [{}])[-1].get("url"),
-            "tracks": [clean_data(t, "song") for t in pl.get("tracks", []) if t.get("videoId")]
-        }
-    except Exception:
-        raise HTTPException(status_code=500, detail="Playlist Not Found")
-
-@app.get("/artist/{channel_id}")
-def get_artist(channel_id: str):
-    try:
-        artist = yt.get_artist(channel_id)
-        return {
-            "id": channel_id,
-            "name": artist["name"],
-            "image": artist.get("thumbnails", [{}])[-1].get("url"),
-            "top_songs": [clean_data(s, "song") for s in artist.get("songs", {}).get("results", [])]
-        }
-    except Exception:
-        raise HTTPException(status_code=404, detail="Artist Not Found")
+        return []
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
