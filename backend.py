@@ -1,12 +1,14 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse # Streaming ke liye zaroori
 from ytmusicapi import YTMusic
 import yt_dlp
+import requests
 from functools import lru_cache
 
 # --- CONFIGURATION ---
-app = FastAPI(title="Fast Music API", description="Cached Stream & Search (Optimized)")
+app = FastAPI(title="Proxy Music API", description="Fixes NotSupportedError via Server Proxy")
 yt = YTMusic(location="IN") 
 
 app.add_middleware(
@@ -17,34 +19,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 1. SETTINGS FOR SEARCH (Not used by yt-dlp here, but kept for ref) ---
-search_opts = {
+# --- YT-DLP SETTINGS ---
+ydl_opts = {
+    'format': 'bestaudio/best',
     'quiet': True,
     'noplaylist': True,
-    'extract_flat': True,
-    'skip_download': True,
-    'geo_bypass': True,
-    'cookiefile': 'cookies.txt', 
-}
-
-# --- 2. SETTINGS FOR PLAY (THE FIX IS HERE) ---
-play_opts = {
-    'format': 'bestaudio[ext=m4a]/bestaudio/best', # M4A is faster
-    'quiet': True,
-    'noplaylist': True,
-    'extract_flat': False, # Must be False for streaming
-    'skip_download': True,
-    'geo_bypass': True,
-    'cookiefile': 'cookies.txt', # Cookies zaroori hain
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    
-    # --- MAGIC FIX FOR WARNINGS & SPEED ---
-    # Ye Android client use karega jo "SABR" error bypass karta hai
+    'cookiefile': 'cookies.txt',
+    # Android Client use karenge taaki block na ho
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web'],
         },
     },
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
 }
 
 # --- HELPER FUNCTION ---
@@ -66,74 +53,113 @@ def clean_data(data):
         "duration": data.get("duration")
     }
 
-# --- CACHING LOGIC ---
-
-# Search Cache (Fastest way using ytmusicapi)
+# --- CACHING ---
 @lru_cache(maxsize=50)
 def get_cached_search(query: str):
     return yt.search(query, filter="songs", limit=100)
 
-# Play Link Cache (With Fix applied via play_opts)
-@lru_cache(maxsize=100)
-def get_cached_stream_url(video_id: str):
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    with yt_dlp.YoutubeDL(play_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return {
-            "id": video_id,
-            "stream_url": info.get("url"),
-            "title": info.get("title"),
-            "thumbnail": info.get("thumbnail"),
-            "duration": info.get("duration")
-        }
-
-# --- ENDPOINTS ---
-
+# --- 1. ROOT ---
 @app.get("/")
 def root(request: Request):
     base_url = str(request.base_url).rstrip("/")
     return {
-        "status": "Online (Optimized Mode) ⚡",
+        "status": "Online (Proxy Mode) 🛡️",
+        "msg": "Fixed 'NotSupportedError' by streaming through server.",
         "endpoints": {
-            "1. Search": f"{base_url}/search/Diljit/1",
-            "2. Play (Cached)": f"{base_url}/play/VIDEO_ID",
-            "3. Recommend": f"{base_url}/recommend/VIDEO_ID"
+            "search": f"{base_url}/search/Diljit/1",
+            "play": f"{base_url}/play/VIDEO_ID",
+            "stream": f"{base_url}/stream/VIDEO_ID"
         }
     }
 
+# --- 2. SEARCH ---
 @app.get("/search/{query}/{page}")
 def search_with_pages(query: str, page: int):
     try:
         all_results = get_cached_search(query)
-        
         items_per_page = 20
         start = (page - 1) * items_per_page
         end = start + items_per_page
         
         page_results = all_results[start:end]
-        
         if not page_results:
-            return {"message": "No more results found."}
-
+            return {"message": "No more results."}
         return [clean_data(res) for res in page_results]
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- 3. PLAY (METADATA + PROXY LINK) ---
 @app.get("/play/{video_id}")
-def get_stream(video_id: str):
+def get_play_data(video_id: str, request: Request):
+    """
+    Ye endpoint ab Direct Link nahi dega.
+    Ye hamare naye '/stream' endpoint ka link dega.
+    """
     try:
-        # Try from Cache first
-        return get_cached_stream_url(video_id)
-    except Exception:
-        # Agar error aaye (link expire etc), toh cache clear karke retry karo
-        print("Stream Error or Expired Link. Retrying...")
-        get_cached_stream_url.cache_clear()
-        try:
-            return get_cached_stream_url(video_id)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail="Stream failed after retry.")
+        base_url = str(request.base_url).rstrip("/")
+        
+        # Metadata fetch karne ke liye hum ytmusicapi use kar sakte hain ya cache
+        # Fast response ke liye bas proxy URL bana ke bhej dete hain
+        # Frontend wese bhi /search se title/image le chuka hota hai
+        
+        return {
+            "id": video_id,
+            # MAGIC LINK: Ab phone seedha YouTube ke paas nahi, hamare server ke paas aayega
+            "stream_url": f"{base_url}/stream/{video_id}", 
+            "title": "Playing via Proxy",
+            "thumbnail": None
+        }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 4. STREAM (THE REAL FIX) ---
+@app.get("/stream/{video_id}")
+def stream_audio(video_id: str):
+    """
+    Ye function Server ban kar YouTube se data lega aur Phone ko pass karega.
+    """
+    try:
+        # 1. Asli YouTube Link nikalna (yt-dlp se)
+        direct_url = None
+        
+        # Pehle Piped API try karte hain (Fast)
+        try:
+            piped_url = f"https://pipedapi.kavin.rocks/streams/{video_id}"
+            resp = requests.get(piped_url, timeout=3)
+            data = resp.json()
+            for stream in data.get("audioStreams", []):
+                if stream.get("mimeType") == "audio/mp4":
+                    direct_url = stream["url"]
+                    break
+        except:
+            pass
+        
+        # Agar Piped fail ho, to yt-dlp use karo (Reliable)
+        if not direct_url:
+            full_url = f"https://www.youtube.com/watch?v={video_id}"
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(full_url, download=False)
+                direct_url = info.get("url")
+
+        if not direct_url:
+            raise HTTPException(status_code=404, detail="Could not extract audio")
+
+        # 2. Audio Data Stream karna (Server -> Phone)
+        def iterfile():
+            # YouTube se data maango
+            with requests.get(direct_url, stream=True) as r:
+                for chunk in r.iter_content(chunk_size=1024*64): # 64KB chunks
+                    yield chunk
+
+        # 3. Phone ko data bhejo "audio/mp4" header ke saath
+        return StreamingResponse(iterfile(), media_type="audio/mp4")
+
+    except Exception as e:
+        print(f"Streaming Error: {e}")
+        raise HTTPException(status_code=500, detail="Stream failed")
+
+# --- 5. RECOMMEND ---
 @app.get("/recommend/{video_id}")
 def get_recommendations(video_id: str):
     try:
