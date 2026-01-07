@@ -6,8 +6,8 @@ import yt_dlp
 from functools import lru_cache
 
 # --- CONFIGURATION ---
-app = FastAPI(title="Advanced Music Backend", description="Spotify Clone with Charts, Albums & Caching")
-yt = YTMusic(location="IN") # Location IN set kiya taki charts India ke aayein
+app = FastAPI(title="Music Backend", description="Spotify Clone API")
+yt = YTMusic(location="IN") 
 
 # CORS Setup
 app.add_middleware(
@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Advanced yt-dlp configuration
+# yt-dlp configuration
 ydl_opts = {
     'format': 'bestaudio/best',
     'quiet': True,
@@ -57,89 +57,32 @@ def clean_data(data, data_type="song"):
 def cached_search(query: str, filter_type: str):
     return yt.search(query, filter=filter_type)
 
-# --- UPDATED ROOT ENDPOINT ---
+# --- ROOT ENDPOINT WITH AI INSTRUCTIONS ---
 @app.get("/")
 def root():
     """
-    Documentation Endpoint showing all available API routes with examples.
+    Returns instructions for AI on how to integrate this API.
     """
     base_url = "https://yt-music-backend-qww6.onrender.com"
     
     return {
-        "app_status": "Online 🟢",
-        "documentation": "API Endpoints & Examples",
-        "endpoints": {
-            "1_home": {
-                "description": "Get Top Charts & Trending Albums (India)",
-                "method": "GET",
-                "example_url": f"{base_url}/home",
-                "response_format": "{ top_songs: [], top_videos: [], trending_albums: [] }"
-            },
-            "2_search": {
-                "description": "Search for Songs, Albums, Playlists or Videos",
-                "method": "GET",
-                "params": ["query", "type (optional: songs, albums, playlists)"],
-                "example_url": f"{base_url}/search?query=Arijit+Singh&type=songs",
-                "response_format": "[ { id, title, subtitle, image, type } ]"
-            },
-            "3_play": {
-                "description": "Get Stream URL (Direct Audio Link)",
-                "method": "GET",
-                "params": ["video_id"],
-                "example_url": f"{base_url}/play/5Eqb_-j3FDA",
-                "response_format": "{ stream_url, title, duration_seconds, thumbnail }"
-            },
-            "4_album_details": {
-                "description": "Get all songs inside an Album",
-                "method": "GET",
-                "params": ["browse_id"],
-                "example_url": f"{base_url}/album/MPREb_Bqt41502", 
-                "response_format": "{ title, artist, tracks: [] }"
-            },
-            "5_playlist_details": {
-                "description": "Get all songs inside a Playlist",
-                "method": "GET",
-                "params": ["playlist_id"],
-                "example_url": f"{base_url}/playlist/RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7FYHOaJ1alYo",
-                "response_format": "{ title, author, tracks: [] }"
-            },
-            "6_artist_details": {
-                "description": "Get Artist Profile & Top Songs",
-                "method": "GET",
-                "params": ["channel_id"],
-                "example_url": f"{base_url}/artist/UC49VRoQIczpJLPGjwlhQJ-g",
-                "response_format": "{ name, description, top_songs: [] }"
-            },
-            "7_recommendations": {
-                "description": "Get 'Up Next' songs based on a video ID",
-                "method": "GET",
-                "params": ["video_id"],
-                "example_url": f"{base_url}/recommend/5Eqb_-j3FDA",
-                "response_format": "[ { id, title, subtitle... } ]"
+        "status": "Online",
+        "message": "Use the prompts below to integrate this API into your app.",
+        "integration_guide": {
+            "base_url": base_url,
+            "endpoints": {
+                "search": f"{base_url}/search?query=SONG_NAME&type=songs|albums|playlists",
+                "play": f"{base_url}/play/VIDEO_ID",
+                "album": f"{base_url}/album/BROWSE_ID",
+                "playlist": f"{base_url}/playlist/PLAYLIST_ID",
+                "artist": f"{base_url}/artist/CHANNEL_ID",
+                "recommend": f"{base_url}/recommend/VIDEO_ID"
             }
-        }
+        },
+        "prompt_for_ai": f"I have a music backend API running at {base_url}. It returns JSON data. Please build a frontend that uses the '/search' endpoint to find music, lists the results, and when a user clicks a song, use the '/play' endpoint to get the 'stream_url' and play it in an audio player. Also handle Album and Playlist views using their respective endpoints."
     }
 
-# --- OTHER ENDPOINTS ---
-
-@app.get("/home")
-def get_home_data():
-    try:
-        charts = yt.get_charts(country="IN")
-        trending = {
-            "top_songs": [clean_data(s, "song") for s in charts.get("songs", {}).get("items", [])[:10]],
-            "top_videos": [clean_data(v, "video") for v in charts.get("videos", {}).get("items", [])[:10]],
-            "trending_albums": [clean_data(a, "album") for a in charts.get("trending", {}).get("items", [])[:10]]
-        }
-        return trending
-    except Exception:
-        fallback_songs = yt.search("Top Trending Songs India", filter="songs")
-        fallback_albums = yt.search("Top Hit Albums India", filter="albums")
-        return {
-            "top_songs": [clean_data(s, "song") for s in fallback_songs[:10]],
-            "top_videos": [],
-            "trending_albums": [clean_data(a, "album") for a in fallback_albums[:10]]
-        }
+# --- API ENDPOINTS ---
 
 @app.get("/search")
 def search(query: str, type: str = Query("songs", enum=["songs", "albums", "playlists", "videos"])):
@@ -220,4 +163,3 @@ def get_recommendations(video_id: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
