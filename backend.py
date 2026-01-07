@@ -7,7 +7,7 @@ from functools import lru_cache
 
 # --- CONFIGURATION ---
 app = FastAPI(title="Advanced Music Backend", description="Spotify Clone with Charts, Albums & Caching")
-yt = YTMusic() # Default locale is usually US, can be set to 'IN' if needed.
+yt = YTMusic(location="IN") # Location IN set kiya taki charts India ke aayein
 
 # CORS Setup
 app.add_middleware(
@@ -30,13 +30,9 @@ ydl_opts = {
 
 # --- HELPER FUNCTIONS ---
 def clean_data(data, data_type="song"):
-    """
-    Ek universal cleaner jo Song, Album, aur Playlist ka data standardize karta hai.
-    """
     thumbnails = data.get("thumbnails", [])
     artists = data.get("artists", [])
     
-    # Handle different artist structures
     artist_name = "Unknown"
     if isinstance(artists, list) and len(artists) > 0:
         artist_name = artists[0].get("name", "Unknown")
@@ -46,84 +42,119 @@ def clean_data(data, data_type="song"):
     item = {
         "id": data.get("videoId") or data.get("browseId"),
         "title": data.get("title"),
-        "subtitle": artist_name, # Artist name or description
+        "subtitle": artist_name,
         "image": thumbnails[-1]["url"] if thumbnails else None,
         "type": data_type
     }
     
-    # Extra data based on type
     if data_type == "song":
         item["album"] = data.get("album", {}).get("name") if data.get("album") else None
         item["duration"] = data.get("duration")
     
     return item
 
-# --- CACHING (Performance Booster) ---
-# Ye function recent searches ko memory me save karega taaki speed tez ho
 @lru_cache(maxsize=100)
 def cached_search(query: str, filter_type: str):
     return yt.search(query, filter=filter_type)
 
-# --- API ENDPOINTS ---
-
+# --- UPDATED ROOT ENDPOINT ---
 @app.get("/")
 def root():
-    return {"status": "Online", "features": ["Charts", "Search", "Stream", "Albums", "Playlists"]}
+    """
+    Documentation Endpoint showing all available API routes with examples.
+    """
+    base_url = "https://yt-music-backend-qww6.onrender.com"
+    
+    return {
+        "app_status": "Online 🟢",
+        "documentation": "API Endpoints & Examples",
+        "endpoints": {
+            "1_home": {
+                "description": "Get Top Charts & Trending Albums (India)",
+                "method": "GET",
+                "example_url": f"{base_url}/home",
+                "response_format": "{ top_songs: [], top_videos: [], trending_albums: [] }"
+            },
+            "2_search": {
+                "description": "Search for Songs, Albums, Playlists or Videos",
+                "method": "GET",
+                "params": ["query", "type (optional: songs, albums, playlists)"],
+                "example_url": f"{base_url}/search?query=Arijit+Singh&type=songs",
+                "response_format": "[ { id, title, subtitle, image, type } ]"
+            },
+            "3_play": {
+                "description": "Get Stream URL (Direct Audio Link)",
+                "method": "GET",
+                "params": ["video_id"],
+                "example_url": f"{base_url}/play/5Eqb_-j3FDA",
+                "response_format": "{ stream_url, title, duration_seconds, thumbnail }"
+            },
+            "4_album_details": {
+                "description": "Get all songs inside an Album",
+                "method": "GET",
+                "params": ["browse_id"],
+                "example_url": f"{base_url}/album/MPREb_Bqt41502", 
+                "response_format": "{ title, artist, tracks: [] }"
+            },
+            "5_playlist_details": {
+                "description": "Get all songs inside a Playlist",
+                "method": "GET",
+                "params": ["playlist_id"],
+                "example_url": f"{base_url}/playlist/RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7FYHOaJ1alYo",
+                "response_format": "{ title, author, tracks: [] }"
+            },
+            "6_artist_details": {
+                "description": "Get Artist Profile & Top Songs",
+                "method": "GET",
+                "params": ["channel_id"],
+                "example_url": f"{base_url}/artist/UC49VRoQIczpJLPGjwlhQJ-g",
+                "response_format": "{ name, description, top_songs: [] }"
+            },
+            "7_recommendations": {
+                "description": "Get 'Up Next' songs based on a video ID",
+                "method": "GET",
+                "params": ["video_id"],
+                "example_url": f"{base_url}/recommend/5Eqb_-j3FDA",
+                "response_format": "[ { id, title, subtitle... } ]"
+            }
+        }
+    }
 
-# 1. HOME / CHARTS (New!)
+# --- OTHER ENDPOINTS ---
+
 @app.get("/home")
 def get_home_data():
-    """Returns Top Charts. If Charts fail, returns Trending Search results."""
     try:
-        # Koshish karo Charts lane ki India ke liye
         charts = yt.get_charts(country="IN")
-        
         trending = {
             "top_songs": [clean_data(s, "song") for s in charts.get("songs", {}).get("items", [])[:10]],
             "top_videos": [clean_data(v, "video") for v in charts.get("videos", {}).get("items", [])[:10]],
             "trending_albums": [clean_data(a, "album") for a in charts.get("trending", {}).get("items", [])[:10]]
         }
         return trending
-
     except Exception:
-        # Agar Charts fail ho jaye (Error aaye), toh hum 'Trending' search karke bhej denge
-        # Taaki App khali na dikhe (Fallback)
-        print("Charts failed, switching to Search Fallback...")
         fallback_songs = yt.search("Top Trending Songs India", filter="songs")
         fallback_albums = yt.search("Top Hit Albums India", filter="albums")
-        
         return {
             "top_songs": [clean_data(s, "song") for s in fallback_songs[:10]],
-            "top_videos": [], # Video search avoid karte hain speed ke liye
+            "top_videos": [],
             "trending_albums": [clean_data(a, "album") for a in fallback_albums[:10]]
         }
 
-# 2. ADVANCED SEARCH
 @app.get("/search")
 def search(query: str, type: str = Query("songs", enum=["songs", "albums", "playlists", "videos"])):
-    """
-    Search for Songs, Albums, or Playlists.
-    Usage: /search?query=Arijit&type=albums
-    """
     try:
-        # Using cached search for speed
         results = cached_search(query, type)
-        
-        # Clean results based on type
         cleaned_results = []
         for res in results:
-            # Result type determine karna
             dtype = "song"
             if "album" in res.get("resultType", "") or type == "albums": dtype = "album"
             elif "playlist" in res.get("resultType", "") or type == "playlists": dtype = "playlist"
-            
             cleaned_results.append(clean_data(res, dtype))
-            
         return cleaned_results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3. STREAM (Audio URL)
 @app.get("/play/{video_id}")
 def get_stream(video_id: str):
     try:
@@ -139,10 +170,8 @@ def get_stream(video_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Stream not found")
 
-# 4. ALBUM DETAILS (New!)
 @app.get("/album/{browse_id}")
 def get_album(browse_id: str):
-    """Get all songs from an Album."""
     try:
         album = yt.get_album(browse_id)
         return {
@@ -154,10 +183,8 @@ def get_album(browse_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Album not found")
 
-# 5. PLAYLIST DETAILS (New!)
 @app.get("/playlist/{playlist_id}")
 def get_playlist(playlist_id: str):
-    """Get all songs from a Playlist."""
     try:
         playlist = yt.get_playlist(playlist_id)
         return {
@@ -169,7 +196,6 @@ def get_playlist(playlist_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Playlist not found")
 
-# 6. ARTIST DETAILS
 @app.get("/artist/{channel_id}")
 def get_artist_details(channel_id: str):
     try:
@@ -183,7 +209,6 @@ def get_artist_details(channel_id: str):
     except Exception:
         raise HTTPException(status_code=404, detail="Artist not found")
 
-# 7. RECOMMENDATIONS
 @app.get("/recommend/{video_id}")
 def get_recommendations(video_id: str):
     try:
@@ -195,3 +220,4 @@ def get_recommendations(video_id: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    
