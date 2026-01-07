@@ -1,24 +1,24 @@
-# Python ka lightweight version use kar rahe hain
+# Python ka lightweight version
 FROM python:3.9-slim
 
-# System dependencies update karo aur FFmpeg install karo
-# yt-dlp ke liye FFmpeg zaroori hai
+# System update karo aur FFmpeg + Node.js install karo
+# Node.js zaroori hai yt-dlp ki speed badhane ke liye
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Working directory set karo
+# Working directory
 WORKDIR /app
 
-# Requirements file copy karo aur install karo
+# Dependencies install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Saara code copy karo
+# Saara code copy
 COPY . .
 
-# Port expose karo (Render ke liye zaroori hai)
+# Port expose
 EXPOSE 8000
 
-# Server start karne ki command
+# Server start
 CMD ["uvicorn", "backend:app", "--host", "0.0.0.0", "--port", "8000"]
