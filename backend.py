@@ -1,3 +1,4 @@
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,10 +6,11 @@ from fastapi.responses import StreamingResponse
 from ytmusicapi import YTMusic
 import yt_dlp
 import requests
+import random
 from functools import lru_cache
 
 # --- CONFIGURATION ---
-app = FastAPI(title="Pure Audio API", description="Strict Audio-Only Streaming")
+app = FastAPI(title="Ultra Stable Music API", description="Multi-Server Fallback System")
 yt = YTMusic(location="IN") 
 
 app.add_middleware(
@@ -19,32 +21,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- STRICT AUDIO SETTINGS ---
+# --- NEW YT-DLP SETTINGS (iOS Client) ---
 ydl_opts = {
-    # CHANGE 1: 'best' hata diya. Ab ye galti se bhi video nahi uthayega.
     'format': 'bestaudio', 
     'quiet': True,
     'noplaylist': True,
     'cookiefile': 'cookies.txt',
+    # iOS client audio ke liye best hai server par
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web'],
+            'player_client': ['ios', 'web'],
         },
     },
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
 }
 
-# --- HELPER ---
+# --- MULTI-SERVER PIPED API LIST ---
+# Agar ek server band hua, toh agla use hoga
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.streampunk.xyz",
+    "https://pipedapi.drgns.space",
+    "https://api.piped.projectsegfau.lt",
+    "https://pipedapi.leptons.xyz"
+]
+
 def clean_data(data):
     thumbnails = data.get("thumbnails", [])
     artists = data.get("artists", [])
-    
     artist_name = "Unknown"
     if isinstance(artists, list) and len(artists) > 0:
         artist_name = artists[0].get("name", "Unknown")
     elif isinstance(artists, dict):
         artist_name = artists.get("name", "Unknown")
-
     return {
         "id": data.get("videoId"),
         "title": data.get("title"),
@@ -57,106 +66,93 @@ def clean_data(data):
 def get_cached_search(query: str):
     return yt.search(query, filter="songs", limit=100)
 
-# --- ENDPOINTS ---
-
 @app.get("/")
 def root(request: Request):
     base_url = str(request.base_url).rstrip("/")
     return {
-        "status": "Online (Audio Only Mode) 🎵",
-        "endpoints": {
-            "search": f"{base_url}/search/Diljit/1",
-            "play": f"{base_url}/play/VIDEO_ID",
-            "stream": f"{base_url}/stream/VIDEO_ID"
-        }
+        "status": "Online (Multi-Server Mode) 🛡️",
+        "endpoints": {"search": f"{base_url}/search/Arijit/1", "play": f"{base_url}/play/VIDEO_ID"}
     }
 
 @app.get("/search/{query}/{page}")
 def search_with_pages(query: str, page: int):
     try:
         all_results = get_cached_search(query)
-        items_per_page = 20
-        start = (page - 1) * items_per_page
-        end = start + items_per_page
-        
-        page_results = all_results[start:end]
-        if not page_results:
-            return {"message": "No more results."}
+        start = (page - 1) * 20
+        page_results = all_results[start : start + 20]
+        if not page_results: return {"message": "No more results."}
         return [clean_data(res) for res in page_results]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/play/{video_id}")
 def get_play_data(video_id: str, request: Request):
-    try:
-        base_url = str(request.base_url).rstrip("/")
-        return {
-            "id": video_id,
-            "stream_url": f"{base_url}/stream/{video_id}", 
-            "title": "Audio Stream",
-            "thumbnail": None
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "id": video_id,
+        "stream_url": f"{base_url}/stream/{video_id}", 
+        "title": "Audio Stream",
+        "thumbnail": None
+    }
 
 @app.get("/stream/{video_id}")
 def stream_audio(video_id: str):
-    try:
-        direct_url = None
-        
-        # 1. Try Piped API (Strict Audio Only)
+    print(f"Attempting to stream: {video_id}")
+    direct_url = None
+    
+    # 1. TRY ALL PIPED SERVERS (Fastest)
+    for api_base in PIPED_INSTANCES:
         try:
-            piped_url = f"https://pipedapi.kavin.rocks/streams/{video_id}"
-            resp = requests.get(piped_url, timeout=3)
-            data = resp.json()
-            
-            # Sirf 'audioStreams' check karenge (VideoStreams ko ignore)
-            for stream in data.get("audioStreams", []):
-                # M4A/MP4 audio prefer karenge
-                if stream.get("mimeType") == "audio/mp4":
-                    direct_url = stream["url"]
+            print(f"Trying Piped Server: {api_base}")
+            resp = requests.get(f"{api_base}/streams/{video_id}", timeout=2)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Sirf MP4/M4A Audio dhundo
+                for stream in data.get("audioStreams", []):
+                    if stream.get("mimeType") == "audio/mp4":
+                        direct_url = stream["url"]
+                        break
+                if direct_url:
+                    print("Found URL via Piped!")
                     break
-            
-            # Agar MP4 audio na mile, koi bhi audio utha lo
-            if not direct_url and data.get("audioStreams"):
-                direct_url = data["audioStreams"][0]["url"]
-                
         except:
-            pass
-        
-        # 2. Try yt-dlp (Strict Audio Only)
-        if not direct_url:
+            continue
+    
+    # 2. FALLBACK TO YT-DLP (If Piped fails)
+    if not direct_url:
+        print("Piped failed. Switching to yt-dlp (iOS Mode)...")
+        try:
             full_url = f"https://www.youtube.com/watch?v={video_id}"
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(full_url, download=False)
-                # Ensure we got a direct url
                 direct_url = info.get("url")
+        except Exception as e:
+            print(f"yt-dlp error: {e}")
 
-        if not direct_url:
-            raise HTTPException(status_code=404, detail="Audio not found")
+    if not direct_url:
+        print("All methods failed.")
+        raise HTTPException(status_code=404, detail="Audio not found")
 
-        # 3. Stream Proxy
-        def iterfile():
-            with requests.get(direct_url, stream=True) as r:
-                for chunk in r.iter_content(chunk_size=1024*64):
+    # 3. STREAM PROXY
+    def iterfile():
+        try:
+            # Headers zaroori hain taki YouTube request reject na kare
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            with requests.get(direct_url, stream=True, headers=headers, timeout=10) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
                     yield chunk
+        except Exception as e:
+            print(f"Stream interrupted: {e}")
 
-        # Content-Type header 'audio/mp4' set kiya taaki browser video na samjhe
-        return StreamingResponse(iterfile(), media_type="audio/mp4")
-
-    except Exception as e:
-        print(f"Streaming Error: {e}")
-        raise HTTPException(status_code=500, detail="Stream failed")
+    return StreamingResponse(iterfile(), media_type="audio/mp4")
 
 @app.get("/recommend/{video_id}")
 def get_recommendations(video_id: str):
     try:
         watch_playlist = yt.get_watch_playlist(video_id)
-        tracks = watch_playlist.get("tracks", [])
-        return [clean_data(t) for t in tracks if "videoId" in t]
-    except Exception:
-        return []
+        return [clean_data(t) for t in watch_playlist.get("tracks", []) if "videoId" in t]
+    except: return []
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
