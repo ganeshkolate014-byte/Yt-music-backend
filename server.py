@@ -1,19 +1,8 @@
 from fastapi import FastAPI, Form
-from fastapi.middleware.cors import CORSMiddleware
-import subprocess, os
+from fastapi.responses import StreamingResponse
+import subprocess
 
 app = FastAPI()
-
-# Allow requests from any frontend (or specify your domain)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-DOWNLOAD_DIR = "./downloads"  # Render container me storage volatile
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 QUALITY_MAP = {
     "144": "bv*[height<=144]+ba/b",
@@ -30,13 +19,18 @@ def download(url: str = Form(...), quality: str = Form(...)):
     if not fmt:
         return {"error": "Invalid quality"}
 
-    # WARNING: Render file system is ephemeral
-    # After container restart, files will disappear
+    # yt-dlp stdout pipe
     cmd = [
         "yt-dlp",
         "-f", fmt,
-        "-o", f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+        "-o", "-",   # "-" means stdout
         url
     ]
-    subprocess.Popen(cmd)
-    return {"status": "Download started"}
+    
+    # subprocess stdout streaming
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # StreamingResponse to frontend
+    return StreamingResponse(process.stdout, media_type="video/mp4", headers={
+        "Content-Disposition": "attachment; filename=video.mp4"
+    })
