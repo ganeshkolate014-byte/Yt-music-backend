@@ -1,5 +1,4 @@
 fastapi
 uvicorn
-ytmusicapi
 yt-dlp
-requests
+python-multipart
